@@ -7,71 +7,92 @@ import (
 	"net"
 	"sync"
 
+	"github.com/pu4mane/goChat/internal/app/broker"
 	"github.com/pu4mane/goChat/internal/app/model"
 )
 
 const MAX_MESSAGE_LENGTH = 1000
 
-type ChatRoom struct {
-	clients  sync.Map
-	messages chan model.Message
+type Room struct {
+	name     string
+	mu       sync.RWMutex
+	clients  map[string]net.Conn
+	messages chan *model.Message
+	broker   broker.MessageBroker
 }
 
-func NewChatRoom() *ChatRoom {
-	return &ChatRoom{
-		messages: make(chan model.Message),
+func NewRoom(name string, broker broker.MessageBroker) *Room {
+	return &Room{
+		name:     name,
+		mu:       sync.RWMutex{},
+		clients:  make(map[string]net.Conn),
+		messages: make(chan *model.Message),
+		broker:   broker,
 	}
 }
 
-func (cs *ChatRoom) AddClient(id string, conn net.Conn) {
-	cs.clients.Store(id, conn)
-	log.Println("User", id, "connected to the chat")
+func (r *Room) addClient(ID string, conn net.Conn) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.clients[ID] = conn
 }
 
-func (cs *ChatRoom) RemoveClient(id string) {
-	cs.clients.Delete(id)
-	log.Println("User", id, "left the chat")
+func (r *Room) removeClient(ID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.clients, ID)
 }
 
-func (cs *ChatRoom) HandleClient(id string, conn net.Conn) {
+func (r *Room) handleBrokerMessage(msg *model.Message) {
+	r.messages <- msg
+}
+
+func (r *Room) HandleClient(ID string, conn net.Conn) {
 	defer conn.Close()
 
-	cs.AddClient(id, conn)
+	r.addClient(ID, conn)
 
 	input := bufio.NewScanner(conn)
 	for input.Scan() {
 		message := input.Text()
-		//добавил ограничение символов
+
 		if len(message) > MAX_MESSAGE_LENGTH {
 			fmt.Fprintf(conn, "message is too long! (%d / %d maximum allowed characters)\n",
 				len(message),
 				MAX_MESSAGE_LENGTH)
 			continue
 		}
-		//добавил выход
+
 		if message == "/q" {
 			break
 		}
 
-		cs.messages <- model.Message{Text: id + ": " + message, ID: id}
+		msg := &model.Message{ID: ID, Text: ID + ": " + message}
+		r.broker.Publish(r.name, msg)
 	}
 
-	cs.RemoveClient(id)
+	r.removeClient(ID)
 }
 
-func (cs *ChatRoom) Broadcaster() {
-	for {
-		msg := <-cs.messages
-		cs.clients.Range(func(key, value interface{}) bool {
-			clientID := key.(string)
-			conn := value.(net.Conn)
-			if msg.ID != clientID {
+func (r *Room) Broadcast() {
+	subscription, err := r.broker.Subscribe(r.name, r.handleBrokerMessage)
+	if err != nil {
+		log.Println("Error subscribing:", err)
+		return
+	}
+
+	defer r.broker.Unsubscribe(subscription)
+
+	for msg := range r.messages {
+		r.mu.RLock()
+		for ID, conn := range r.clients {
+			if msg.ID != ID {
 				_, err := fmt.Fprintln(conn, msg.Text)
 				if err != nil {
 					log.Println("Error sending message:", err)
 				}
 			}
-			return true
-		})
+		}
+		r.mu.RUnlock()
 	}
 }
