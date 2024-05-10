@@ -4,12 +4,11 @@ import (
 	"log"
 	"net"
 
+	"github.com/pu4mane/goChat/internal/app/broker"
 	"github.com/pu4mane/goChat/internal/app/room"
 )
 
 func main() {
-	cs := room.NewChatRoom()
-
 	listen, err := net.Listen("tcp", "localhost:9090")
 	if err != nil {
 		log.Fatal(err)
@@ -17,7 +16,14 @@ func main() {
 		log.Println("Server is running")
 	}
 
-	go cs.Broadcaster()
+	ns, err := broker.NewNATS("localhost:4222")
+	if err != nil {
+		log.Fatal()
+	}
+
+	r := room.NewRoom("chat", ns)
+
+	go r.Broadcast()
 
 	for {
 		conn, err := listen.Accept()
@@ -26,6 +32,6 @@ func main() {
 			continue
 		}
 
-		go cs.HandleClient(conn.RemoteAddr().String(), conn)
+		go r.HandleClient(conn.RemoteAddr().String(), conn)
 	}
 }
