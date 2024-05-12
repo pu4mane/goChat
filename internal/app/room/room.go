@@ -47,15 +47,14 @@ func (r *Room) handleBrokerMessage(msg *model.Message) {
 	r.messages <- msg
 }
 
-func (r *Room) HandleClient(ID string, conn net.Conn) {
-	defer conn.Close()
-
-	r.addClient(ID, conn)
-
+func (r *Room) readMessages(ID string, conn net.Conn) {
+	var (
+		message string
+		msg     *model.Message
+	)
 	input := bufio.NewScanner(conn)
 	for input.Scan() {
-		message := input.Text()
-
+		message = input.Text()
 		if len(message) > MAX_MESSAGE_LENGTH {
 			fmt.Fprintf(conn, "message is too long! (%d / %d maximum allowed characters)\n",
 				len(message),
@@ -66,12 +65,21 @@ func (r *Room) HandleClient(ID string, conn net.Conn) {
 		if message == "/q" {
 			break
 		}
-
-		msg := &model.Message{ID: ID, Text: ID + ": " + message}
+		msg = &model.Message{ID: ID, Text: ID + ": " + message}
 		r.broker.Publish(r.name, msg)
 	}
+}
 
-	r.removeClient(ID)
+func (r *Room) HandleClient(ID string, conn net.Conn) {
+	defer func() {
+		log.Printf("closing connection from %v", conn.RemoteAddr())
+		conn.Close()
+		r.removeClient(ID)
+	}()
+
+	r.addClient(ID, conn)
+
+	r.readMessages(ID, conn)
 }
 
 func (r *Room) Broadcast() {
